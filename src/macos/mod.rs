@@ -91,6 +91,8 @@ pub fn capture(options: CaptureOptions) -> Result<ContextSnapshot> {
 }
 
 pub fn debug_dump() -> Result<String> {
+    let started = std::time::Instant::now();
+
     let Some(focused_app) = frontmost_app() else {
         return Err(SystexError::NothingFocused);
     };
@@ -106,7 +108,18 @@ pub fn debug_dump() -> Result<String> {
 
     let mut out = String::new();
 
-    out.push_str(&format!("app: {focused_app:?}\n"));
+    out.push_str("== systex diagnostics ==\n");
+    out.push_str(&format!("captured at: {}\n", now_ms()));
+
+    for permission in crate::permissions::ALL {
+        out.push_str(&format!(
+            "permission {}: {}\n",
+            permission.label(),
+            crate::permissions::status(permission).label()
+        ));
+    }
+
+    out.push_str(&format!("\n== application ==\n{focused_app:#?}\n"));
     out.push_str(&format!(
         "AXManualAccessibility -> AXError {}\n",
         app.set_flag("AXManualAccessibility")
@@ -115,39 +128,86 @@ pub fn debug_dump() -> Result<String> {
         "AXEnhancedUserInterface -> AXError {}\n",
         app.set_flag("AXEnhancedUserInterface")
     ));
-    out.push_str(&format!("app attributes: {:?}\n", app.attribute_names()));
+    dump_attributes(&app, &mut out);
 
-    let Some(focused) = focused_element(&app) else {
-        out.push_str("no focused element\n");
-        return Ok(out);
-    };
+    let window = app
+        .element_attribute(kAXFocusedWindowAttribute)
+        .or_else(|| first_window(&app));
 
-    out.push_str(&format!(
-        "focused role: {:?} subrole: {:?}\n",
-        focused.string_attribute(kAXRoleAttribute),
-        focused.string_attribute("AXSubrole")
-    ));
-    out.push_str(&format!(
-        "focused attributes: {:?}\n",
-        focused.attribute_names()
-    ));
-    out.push_str(&format!(
-        "focused parameterized: {:?}\n",
-        focused.parameterized_attribute_names()
-    ));
-    out.push_str(&format!(
-        "AXValue: {:?}\n",
-        focused
-            .string_attribute(kAXValueAttribute)
-            .map(|value| value.chars().take(120).collect::<String>())
-    ));
-    out.push_str(&format!("AXSelectedTextRange: {:?}\n", focused.selection()));
-
-    if let Some((start, _)) = focused.selection() {
-        out.push_str(&format!("caret rect: {:?}\n", focused.caret_rect(start)));
+    out.push_str("\n== focused window ==\n");
+    match &window {
+        Some(window) => {
+            out.push_str(&format!("{:#?}\n", window_info(window)));
+            dump_attributes(window, &mut out);
+        }
+        None => out.push_str("none\n"),
     }
 
+    out.push_str("\n== focused element ==\n");
+    match focused_element(&app) {
+        Some(focused) => {
+            out.push_str(&format!("{:#?}\n", focused.info(true)));
+            out.push_str(&format!(
+                "parameterized: {:?}\n",
+                focused.parameterized_attribute_names()
+            ));
+            dump_attributes(&focused, &mut out);
+
+            let caret = caret_context(&focused, true);
+
+            out.push_str(&format!("\n== caret ==\n{caret:#?}\n"));
+            out.push_str(&format!(
+                "\n== related ==\n{:#?}\n",
+                crate::related::from_caret(&caret.text_before, &caret.text_after)
+            ));
+
+            let words = words::word_boxes(&focused);
+
+            out.push_str(&format!("\n== words ({}) ==\n", words.len()));
+            for word in words {
+                out.push_str(&format!("{word:?}\n"));
+            }
+        }
+        None => out.push_str("none\n"),
+    }
+
+    out.push_str(&format!("\n== pointer ==\n{:#?}\n", pointer_context(true)));
+
+    out.push_str("\n== window tree ==\n");
+    match window_tree(&app, window.as_ref()) {
+        Some(tree) => out.push_str(&flatten(&tree)),
+        None => out.push_str("none\n"),
+    }
+
+    out.push_str(&format!("\ntook {}ms\n", started.elapsed().as_millis()));
+
     Ok(out)
+}
+
+/// Every attribute the element admits to, with the value it answers, because an attribute list on
+/// its own never explains why a read came back empty.
+fn dump_attributes(element: &Elem, out: &mut String) {
+    out.push_str("attributes:\n");
+
+    for name in element.attribute_names() {
+        let value = match element.attribute(&name) {
+            Some(value) => format!("{value:?}")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+            None => "<unreadable>".to_string(),
+        };
+
+        out.push_str(&format!("  {name} = {}\n", head(&value, 300)));
+    }
+}
+
+fn head(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+
+    format!("{}…", text.chars().take(limit).collect::<String>())
 }
 
 /// Chrome reports nothing for the system-wide element's `AXFocusedUIElement` but does answer the
