@@ -1,25 +1,26 @@
 import { invoke } from "@tauri-apps/api/core"
+import { listen } from "@tauri-apps/api/event"
 import { useEffect, useState } from "react"
 
-import type { ContextSnapshot, ElementInfo, ProviderInfo, Rect } from "./types"
-
-const PROVIDERS = ["mock", "system"]
-const INTERVALS = [200, 500, 1000, 2000]
+import type { CaretContext, ContextSnapshot, ElementInfo, Rect, Settings } from "./types"
 
 export function App() {
-  const [provider, setProvider] = useState<ProviderInfo | null>(null)
+  const [settings, setSettings] = useState<Settings | null>(null)
   const [snapshot, setSnapshot] = useState<ContextSnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [live, setLive] = useState(true)
-  const [interval, setInterval] = useState(500)
-  const [showRaw, setShowRaw] = useState(false)
 
   useEffect(() => {
-    invoke<ProviderInfo>("provider_info").then(setProvider)
+    invoke<Settings>("settings").then(setSettings)
+
+    const unlisten = listen<Settings>("settings", (event) => setSettings(event.payload))
+
+    return () => {
+      unlisten.then((stop) => stop())
+    }
   }, [])
 
   useEffect(() => {
-    if (!live) {
+    if (!settings) {
       return
     }
 
@@ -41,187 +42,118 @@ export function App() {
     }
 
     tick()
-    const timer = window.setInterval(tick, interval)
+    const timer = window.setInterval(tick, settings.interval_ms)
 
     return () => {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [live, interval, provider?.name])
+  }, [settings?.interval_ms])
 
-  async function captureOnce() {
-    try {
-      setSnapshot(await invoke<ContextSnapshot>("capture"))
-      setError(null)
-    } catch (reason) {
-      setError(String(reason))
-    }
-  }
-
-  async function switchProvider(name: string) {
-    try {
-      setProvider(await invoke<ProviderInfo>("set_provider", { name }))
-      setError(null)
-    } catch (reason) {
-      setError(String(reason))
-    }
+  if (!settings) {
+    return null
   }
 
   return (
-    <div className="app">
-      <header className="bar">
-        <div className="brand">
-          <span className="dot" data-live={live} />
-          <strong>Systex View</strong>
-        </div>
-
-        <div className="controls">
-          <select value={provider?.name ?? "mock"} onChange={(e) => switchProvider(e.target.value)}>
-            {PROVIDERS.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </select>
-
-          <select value={interval} onChange={(e) => setInterval(Number(e.target.value))}>
-            {INTERVALS.map((ms) => (
-              <option key={ms} value={ms}>
-                every {ms}ms
-              </option>
-            ))}
-          </select>
-
-          <button onClick={() => setLive(!live)}>{live ? "Pause" : "Go live"}</button>
-          <button onClick={captureOnce}>Capture once</button>
-          <button onClick={() => setShowRaw(!showRaw)}>{showRaw ? "Hide JSON" : "Show JSON"}</button>
-        </div>
-      </header>
-
-      {provider && !provider.available && (
-        <p className="note">
-          Provider <code>{provider.name}</code> reports itself as unavailable — capture will fail
-          until it is implemented.
-        </p>
+    <div className="overlay" style={{ opacity: settings.opacity / 100 }}>
+      {snapshot?.focused_window?.bounds && (
+        <div className="frame window" style={toStyle(snapshot.focused_window.bounds)} />
       )}
 
-      {error && <p className="error">{error}</p>}
-
-      {!snapshot && !error && <p className="note">No snapshot captured yet.</p>}
-
-      {snapshot && (
-        <main className="grid">
-          <section className="card">
-            <h2>Snapshot</h2>
-            <Field label="provider" value={snapshot.provider} />
-            <Field label="captured at" value={new Date(snapshot.captured_at_ms).toISOString()} />
-          </section>
-
-          <section className="card">
-            <h2>Focused app</h2>
-            {!snapshot.focused_app && <Empty />}
-            {snapshot.focused_app && (
-              <>
-                <Field label="name" value={snapshot.focused_app.name} />
-                <Field label="bundle id" value={snapshot.focused_app.bundle_id} />
-                <Field label="pid" value={snapshot.focused_app.pid} />
-              </>
-            )}
-          </section>
-
-          <section className="card">
-            <h2>Focused window</h2>
-            {!snapshot.focused_window && <Empty />}
-            {snapshot.focused_window && (
-              <>
-                <Field label="title" value={snapshot.focused_window.title} />
-                <Field label="bounds" value={formatRect(snapshot.focused_window.bounds)} />
-              </>
-            )}
-          </section>
-
-          <section className="card wide">
-            <h2>Caret</h2>
-            {!snapshot.caret && <Empty />}
-            {snapshot.caret && (
-              <>
-                <p className="text">
-                  <span className="before">{snapshot.caret.text_before}</span>
-                  <span className="caret" />
-                  {snapshot.caret.selected_text && (
-                    <span className="selection">{snapshot.caret.selected_text}</span>
-                  )}
-                  <span className="after">{snapshot.caret.text_after}</span>
-                </p>
-                <Field label="line" value={snapshot.caret.line} />
-                <Field label="column" value={snapshot.caret.column} />
-                <Field label="bounds" value={formatRect(snapshot.caret.bounds)} />
-                <Element element={snapshot.caret.element} />
-              </>
-            )}
-          </section>
-
-          <section className="card wide">
-            <h2>Pointer</h2>
-            {!snapshot.pointer && <Empty />}
-            {snapshot.pointer && (
-              <>
-                <Field
-                  label="position"
-                  value={`${Math.round(snapshot.pointer.position.x)}, ${Math.round(snapshot.pointer.position.y)}`}
-                />
-                <Field label="app" value={snapshot.pointer.app?.name ?? null} />
-                <Field label="window" value={snapshot.pointer.window?.title ?? null} />
-                <Element element={snapshot.pointer.element} />
-              </>
-            )}
-          </section>
-
-          {showRaw && (
-            <section className="card wide">
-              <h2>Raw</h2>
-              <pre>{JSON.stringify(snapshot, null, 2)}</pre>
-            </section>
-          )}
-        </main>
+      {snapshot?.caret?.element?.bounds && (
+        <div className="frame element" style={toStyle(snapshot.caret.element.bounds)} />
       )}
+
+      {snapshot?.caret?.bounds && (
+        <div className="frame caret" style={toStyle(snapshot.caret.bounds)} />
+      )}
+
+      {snapshot?.pointer && (
+        <div
+          className="pointer"
+          style={{ left: snapshot.pointer.position.x, top: snapshot.pointer.position.y }}
+        />
+      )}
+
+      <div className="hud">
+        <header>
+          <span className="dot" />
+          <strong>systex</strong>
+          <span className="meta">every {settings.interval_ms}ms</span>
+        </header>
+
+        {error && <p className="error">{error}</p>}
+
+        {!error && snapshot && (
+          <>
+            <Row label="app" value={snapshot.focused_app?.name ?? null} />
+            <Row label="window" value={snapshot.focused_window?.title ?? null} />
+            <Row label="caret" value={formatCaret(snapshot)} />
+            <Row label="element" value={formatElement(snapshot.caret?.element ?? null)} />
+            <Row
+              label="pointer"
+              value={
+                snapshot.pointer
+                  ? `${Math.round(snapshot.pointer.position.x)}, ${Math.round(snapshot.pointer.position.y)}`
+                  : null
+              }
+            />
+            <Row label="under pointer" value={formatElement(snapshot.pointer?.element ?? null)} />
+
+            {snapshot.caret && hasText(snapshot.caret) && (
+              <p className="text">
+                <span className="before">{snapshot.caret.text_before}</span>
+                <span className="marker" />
+                {snapshot.caret.selected_text && (
+                  <span className="selection">{snapshot.caret.selected_text}</span>
+                )}
+                <span className="after">{snapshot.caret.text_after}</span>
+              </p>
+            )}
+          </>
+        )}
+      </div>
     </div>
   )
 }
 
-function Field({ label, value }: { label: string; value: string | number | null }) {
+function Row({ label, value }: { label: string; value: string | null }) {
   return (
-    <div className="field">
+    <div className="row">
       <span className="key">{label}</span>
       <span className="value">{value === null ? "—" : value}</span>
     </div>
   )
 }
 
-function Element({ element }: { element: ElementInfo | null }) {
-  if (!element) {
-    return <Field label="element" value={null} />
-  }
-
-  return (
-    <div className="element">
-      <Field label="role" value={element.role} />
-      <Field label="label" value={element.label} />
-      <Field label="value" value={element.value} />
-      <Field label="editable" value={element.editable ? "yes" : "no"} />
-      <Field label="bounds" value={formatRect(element.bounds)} />
-    </div>
-  )
+function hasText(caret: CaretContext) {
+  return caret.text_before.length > 0 || caret.text_after.length > 0 || caret.selected_text !== null
 }
 
-function Empty() {
-  return <p className="note">Not captured.</p>
+function toStyle(rect: Rect) {
+  return { left: rect.x, top: rect.y, width: rect.width, height: rect.height }
 }
 
-function formatRect(rect: Rect | null) {
-  if (!rect) {
+function formatCaret(snapshot: ContextSnapshot) {
+  if (!snapshot.caret) {
     return null
   }
 
-  return `${Math.round(rect.x)}, ${Math.round(rect.y)} · ${Math.round(rect.width)}×${Math.round(rect.height)}`
+  if (snapshot.caret.line === null || snapshot.caret.column === null) {
+    return "unknown position"
+  }
+
+  return `line ${snapshot.caret.line}, column ${snapshot.caret.column}`
+}
+
+function formatElement(element: ElementInfo | null) {
+  if (!element) {
+    return null
+  }
+
+  if (!element.label) {
+    return element.role
+  }
+
+  return `${element.role} · ${element.label}`
 }

@@ -55,7 +55,8 @@ export type ContextSnapshot = {
   pointer: PointerContext | null
 }
 
-export type ProviderInfo = {
-  name: string
-  available: boolean
+export type Settings = {
+  interval_ms: number
+  opacity: number
+  overlay_visible: boolean
 }

@@ -10,15 +10,8 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "title": "Systex View",
-        "width": 1100,
-        "height": 780,
-        "minWidth": 720,
-        "minHeight": 520
-      }
-    ],
+    "windows": [],
+    "macOSPrivateApi": true,
     "security": {
       "csp": null
     }
@@ -26,6 +19,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

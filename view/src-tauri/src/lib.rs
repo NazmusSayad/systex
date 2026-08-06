@@ -1,64 +1,97 @@
+mod overlay;
+mod tray;
+
 use std::sync::Mutex;
 
 use serde::Serialize;
-use systex::{ContextProvider, ContextSnapshot, MockProvider, provider_by_name};
-use tauri::{Manager, State};
+use systex::{ContextSnapshot, SystemProvider};
+use tauri::{AppHandle, Emitter, Manager};
 
-struct View {
-    provider: Mutex<Box<dyn ContextProvider>>,
+#[derive(Debug, Clone, Serialize)]
+pub struct Settings {
+    pub interval_ms: u64,
+    pub opacity: u8,
+    pub overlay_visible: bool,
 }
 
-#[derive(Serialize)]
-struct ProviderInfo {
-    name: String,
-    available: bool,
+pub struct State {
+    settings: Mutex<Settings>,
 }
 
-#[tauri::command]
-fn provider_info(view: State<'_, View>) -> ProviderInfo {
-    let provider = view.provider.lock().expect("provider lock is poisoned");
+impl State {
+    fn settings(&self) -> Settings {
+        self.settings
+            .lock()
+            .expect("the settings lock is poisoned")
+            .clone()
+    }
 
-    ProviderInfo {
-        name: provider.name().to_string(),
-        available: provider.is_available(),
+    fn set_interval(&self, interval_ms: u64) {
+        self.settings
+            .lock()
+            .expect("the settings lock is poisoned")
+            .interval_ms = interval_ms;
+    }
+
+    fn set_opacity(&self, opacity: u8) {
+        self.settings
+            .lock()
+            .expect("the settings lock is poisoned")
+            .opacity = opacity;
+    }
+
+    fn toggle_overlay(&self) -> bool {
+        let mut settings = self.settings.lock().expect("the settings lock is poisoned");
+
+        settings.overlay_visible = !settings.overlay_visible;
+
+        settings.overlay_visible
     }
 }
 
-#[tauri::command]
-fn set_provider(view: State<'_, View>, name: String) -> Result<ProviderInfo, String> {
-    let next = provider_by_name(&name).map_err(|error| error.to_string())?;
-    let info = ProviderInfo {
-        name: next.name().to_string(),
-        available: next.is_available(),
-    };
-
-    *view.provider.lock().expect("provider lock is poisoned") = next;
-
-    Ok(info)
+fn push_settings(app: &AppHandle) {
+    app.emit("settings", app.state::<State>().settings())
+        .expect("the settings can be emitted to the overlay");
 }
 
 #[tauri::command]
-fn capture(view: State<'_, View>) -> Result<ContextSnapshot, String> {
-    view.provider
-        .lock()
-        .expect("provider lock is poisoned")
+fn settings(state: tauri::State<'_, State>) -> Settings {
+    state.settings()
+}
+
+#[tauri::command]
+fn capture() -> Result<ContextSnapshot, String> {
+    SystemProvider::new()
         .capture()
         .map_err(|error| error.to_string())
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_nspanel::init());
+
+    builder
         .setup(|app| {
-            app.manage(View {
-                provider: Mutex::new(Box::new(MockProvider::new())),
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            app.manage(State {
+                settings: Mutex::new(Settings {
+                    interval_ms: 500,
+                    opacity: 80,
+                    overlay_visible: true,
+                }),
             });
+
+            overlay::create(app)?;
+            tray::create(app)?;
+            overlay::set_visible(app.handle(), true)?;
+
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            provider_info,
-            set_provider,
-            capture
-        ])
+        .invoke_handler(tauri::generate_handler![settings, capture])
         .run(tauri::generate_context!())
-        .expect("the view window failed to start");
+        .expect("the overlay failed to start");
 }

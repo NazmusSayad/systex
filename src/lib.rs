@@ -1,5 +1,8 @@
 pub mod error;
+#[cfg(target_os = "macos")]
+mod macos;
 pub mod model;
+pub mod permissions;
 pub mod provider;
 
 pub use error::{Result, SystexError};
@@ -7,49 +10,41 @@ pub use model::{
     AppInfo, CaretContext, ContextSnapshot, ElementInfo, Point, PointerContext, Rect, WindowInfo,
     now_ms,
 };
-pub use provider::{ContextProvider, MockProvider, SystemProvider};
-
-pub fn provider_by_name(name: &str) -> Result<Box<dyn ContextProvider>> {
-    if name == "system" {
-        return Ok(Box::new(SystemProvider::new()));
-    }
-    if name == "mock" {
-        return Ok(Box::new(MockProvider::new()));
-    }
-    Err(SystexError::Capture(format!("unknown provider `{name}`")))
-}
+pub use permissions::{Permission, PermissionStatus};
+pub use provider::SystemProvider;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn mock_provider_captures_a_full_snapshot() {
-        let snapshot = MockProvider::new().capture().expect("mock capture works");
+    fn capture_reports_a_snapshot_or_a_clear_error() {
+        let provider = SystemProvider::new();
 
-        assert_eq!(snapshot.provider, "mock");
-        assert!(snapshot.focused_app.is_some());
-        assert!(snapshot.focused_window.is_some());
-        assert!(snapshot.caret.is_some());
-        assert!(snapshot.pointer.is_some());
+        if !provider.is_available() {
+            assert!(matches!(
+                provider.capture().expect_err("capture needs permission"),
+                SystexError::PermissionDenied | SystexError::UnsupportedPlatform(_)
+            ));
+            return;
+        }
+
+        match provider.capture() {
+            Ok(snapshot) => assert_eq!(snapshot.provider, "system"),
+            Err(error) => assert!(matches!(
+                error,
+                SystexError::NothingFocused
+                    | SystexError::Capture(_)
+                    | SystexError::Unimplemented(_)
+            )),
+        }
     }
 
     #[test]
-    fn system_provider_is_not_implemented_yet() {
-        let error = SystemProvider::new()
-            .capture()
-            .expect_err("no system capture yet");
-
-        assert!(matches!(
-            error,
-            SystexError::Unimplemented(_) | SystexError::UnsupportedPlatform(_)
-        ));
-    }
-
-    #[test]
-    fn unknown_provider_name_is_rejected() {
-        assert!(provider_by_name("mock").is_ok());
-        assert!(provider_by_name("system").is_ok());
-        assert!(provider_by_name("nope").is_err());
+    fn availability_follows_the_accessibility_permission() {
+        assert_eq!(
+            SystemProvider::new().is_available(),
+            permissions::status(Permission::Accessibility) == PermissionStatus::Granted
+        );
     }
 }
