@@ -1,0 +1,19 @@
+[package]
+name = "systex-view"
+description = "Window that renders the context captured around the cursor."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "systex_view_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+systex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = [] }
