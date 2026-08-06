@@ -10,7 +10,7 @@ pub mod related;
 pub use error::{Result, SystexError};
 pub use model::{
     AppInfo, CaptureOptions, CaretContext, ContextSnapshot, ElementInfo, Point, PointerContext,
-    Rect, RelatedContent, WindowInfo, WordBox, now_ms,
+    Rect, RelatedContent, TextNode, WindowInfo, WordBox, now_ms,
 };
 pub use permissions::{Permission, PermissionStatus};
 pub use provider::SystemProvider;

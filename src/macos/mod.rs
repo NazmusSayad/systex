@@ -17,8 +17,8 @@ use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 
 use crate::error::{Result, SystexError};
 use crate::model::{
-    AppInfo, CaptureOptions, CaretContext, ContextSnapshot, Point, PointerContext, WindowInfo,
-    WordBox, now_ms,
+    AppInfo, CaptureOptions, CaretContext, ContextSnapshot, Point, PointerContext, TextNode,
+    WindowInfo, WordBox, now_ms,
 };
 
 pub use engine::{listen, stop, tick};
@@ -26,12 +26,12 @@ pub use engine::{listen, stop, tick};
 use elem::{APP_TIMEOUT, ELEMENT_TIMEOUT, Elem};
 
 /// A whole-window text scrape can walk a browser's entire DOM, so it is bounded on every axis.
-const MAX_DEPTH: usize = 40;
+const MAX_DEPTH: usize = 100;
 const MAX_NODES: usize = 1500;
-const MAX_CHARS: usize = 20_000;
-/// Below this depth every element that branches ends its children with a blank line, which turns
-/// the flat scrape into the visual groups the window itself has.
-const GROUP_DEPTH: usize = 8;
+/// A fragment this short is treated as part of a sentence rather than a node of its own, up to a
+/// comfortable line length.
+const INLINE_CHARS: usize = 24;
+const LINE_CHARS: usize = 110;
 
 pub fn capture(options: CaptureOptions) -> Result<ContextSnapshot> {
     let Some(focused_app) = frontmost_app() else {
@@ -57,6 +57,12 @@ pub fn capture(options: CaptureOptions) -> Result<ContextSnapshot> {
         .as_ref()
         .map(|element| caret_context(element, options.attribute_names));
 
+    let window_tree = if options.window_text {
+        window_tree(&app, window.as_ref())
+    } else {
+        None
+    };
+
     Ok(ContextSnapshot {
         captured_at_ms: now_ms(),
         provider: "macos-accessibility".to_string(),
@@ -71,11 +77,8 @@ pub fn capture(options: CaptureOptions) -> Result<ContextSnapshot> {
         } else {
             None
         },
-        window_text: if options.window_text {
-            window_text(&app, window.as_ref())
-        } else {
-            None
-        },
+        window_text: window_tree.as_ref().map(flatten),
+        window_tree,
         words: if options.words {
             match focused.as_ref() {
                 Some(element) => words::word_boxes(element),
@@ -308,8 +311,8 @@ fn enclosing_window(element: &Elem) -> Option<Elem> {
 /// The visible text of the whole front window, for the cases where the caret alone is not the
 /// context: what the user is reading, not just what they are typing. A web area is preferred when
 /// there is one, because in a browser the chrome around the page is noise.
-fn window_text(app: &Elem, window: Option<&Elem>) -> Option<String> {
-    let mut best = String::new();
+fn window_tree(app: &Elem, window: Option<&Elem>) -> Option<TextNode> {
+    let mut best: Option<TextNode> = None;
 
     // Chromium finishes building its tree some time after the accessibility flags are set, so an
     // empty first read is retried rather than reported as "this app exposes nothing".
@@ -321,15 +324,21 @@ fn window_text(app: &Elem, window: Option<&Elem>) -> Option<String> {
             (None, None) => app,
         };
 
-        let mut out = String::new();
         let mut seen = HashSet::new();
         let mut nodes = 0usize;
+        let tree = collect_tree(root, 0, &mut nodes, &mut seen);
 
-        collect_text(root, 0, &mut nodes, &mut seen, &mut out);
+        if let Some(tree) = tree {
+            let longer = match &best {
+                Some(best) => flatten(&tree).len() > flatten(best).len(),
+                None => true,
+            };
 
-        if out.len() > best.len() {
-            best = out;
+            if longer {
+                best = Some(tree);
+            }
         }
+
         if nodes > 1 {
             break;
         }
@@ -338,54 +347,134 @@ fn window_text(app: &Elem, window: Option<&Elem>) -> Option<String> {
         }
     }
 
-    if best.trim().is_empty() {
-        return None;
-    }
-
-    Some(best.trim().to_string())
+    best
 }
 
-fn collect_text(
+fn collect_tree(
     element: &Elem,
     depth: usize,
     nodes: &mut usize,
     seen: &mut HashSet<String>,
-    out: &mut String,
-) {
-    if depth > MAX_DEPTH || *nodes > MAX_NODES || out.len() > MAX_CHARS {
-        return;
+) -> Option<TextNode> {
+    if depth > MAX_DEPTH || *nodes > MAX_NODES {
+        return None;
     }
 
     *nodes += 1;
 
-    for name in [kAXTitleAttribute, kAXValueAttribute, "AXDescription"] {
-        if let Some(text) = element.string_attribute(name) {
-            // Values arrive with their own line breaks and runs of padding, which read as ragged
-            // holes once the scrape is stacked, so every snippet becomes one tidy line.
-            let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut text = String::new();
 
-            if !text.is_empty() && seen.insert(text.clone()) {
-                out.push_str(&text);
-                out.push('\n');
+    for name in [kAXTitleAttribute, kAXValueAttribute, "AXDescription"] {
+        if let Some(value) = element.string_attribute(name) {
+            // Values arrive with their own line breaks and runs of padding, which read as ragged
+            // holes once the tree is stacked, so every snippet is squeezed onto one line.
+            let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+
+            if value.is_empty() || !seen.insert(value.clone()) {
+                continue;
             }
+
+            if !text.is_empty() {
+                text.push(' ');
+            }
+
+            text.push_str(&value);
         }
     }
 
-    let children = element.children();
-    let group = children.len() > 1 && depth <= GROUP_DEPTH;
+    let mut children = Vec::new();
 
-    for child in children {
-        if *nodes > MAX_NODES || out.len() > MAX_CHARS {
+    for child in element.children() {
+        if *nodes > MAX_NODES {
             break;
         }
 
-        let before = out.len();
-
-        collect_text(&child, depth + 1, nodes, seen, out);
-
-        if group && out.len() > before && !out.ends_with("\n\n") {
-            out.push('\n');
+        if let Some(node) = collect_tree(&child, depth + 1, nodes, seen) {
+            children.push(node);
         }
+    }
+
+    let children = merge_fragments(children);
+
+    if text.is_empty() && children.is_empty() {
+        return None;
+    }
+
+    // A wrapper that says nothing itself is a rung of the ladder the layout needed, not a level of
+    // the document, so its only child takes its place.
+    if text.is_empty() && children.len() == 1 {
+        return children.into_iter().next();
+    }
+
+    Some(TextNode {
+        role: element
+            .string_attribute(kAXRoleAttribute)
+            .unwrap_or_else(|| "AXUnknown".to_string()),
+        text: if text.is_empty() { None } else { Some(text) },
+        children,
+    })
+}
+
+/// A styled paragraph or a highlighted code block hands out one leaf per word, so runs of short
+/// leaves are stitched back into the sentence they came from.
+fn merge_fragments(children: Vec<TextNode>) -> Vec<TextNode> {
+    let mut merged: Vec<TextNode> = Vec::new();
+
+    for child in children {
+        let fragment = child.children.is_empty()
+            && child
+                .text
+                .as_ref()
+                .is_some_and(|text| text.chars().count() <= INLINE_CHARS);
+
+        if !fragment {
+            merged.push(child);
+            continue;
+        }
+
+        let text = child.text.expect("a fragment carries text");
+        let last = merged.last_mut();
+
+        if let Some(last) = last
+            && last.children.is_empty()
+            && let Some(previous) = last.text.as_mut()
+            && previous.chars().count() + text.chars().count() < LINE_CHARS
+        {
+            previous.push(' ');
+            previous.push_str(&text);
+            continue;
+        }
+
+        merged.push(TextNode {
+            role: child.role,
+            text: Some(text),
+            children: Vec::new(),
+        });
+    }
+
+    merged
+}
+
+fn flatten(node: &TextNode) -> String {
+    let mut out = String::new();
+
+    write_flat(node, 0, &mut out);
+
+    out
+}
+
+fn write_flat(node: &TextNode, depth: usize, out: &mut String) {
+    if let Some(text) = &node.text {
+        for _ in 0..depth {
+            out.push_str("  ");
+        }
+
+        out.push_str(text);
+        out.push('\n');
+    }
+
+    for child in &node.children {
+        write_flat(child, depth + 1, out);
     }
 }
 

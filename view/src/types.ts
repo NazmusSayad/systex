@@ -77,6 +77,12 @@ export type WordBox = {
   rect: Rect
 }
 
+export type TextNode = {
+  role: string
+  text: string | null
+  children: TextNode[]
+}
+
 export type ContextSnapshot = {
   captured_at_ms: number
   provider: string
@@ -86,6 +92,7 @@ export type ContextSnapshot = {
   pointer: PointerContext | null
   related: RelatedContent | null
   window_text: string | null
+  window_tree: TextNode | null
   words: WordBox[]
 }
 

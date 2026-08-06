@@ -158,18 +158,43 @@ header {
   mask-image: none;
 }
 
-.card.tall .text {
+.tree {
   height: 100%;
-  margin: 0;
-  padding: 0;
-  background: none;
-  font-size: 9px;
-  line-height: 1.45;
+  column-gap: 22px;
+  column-rule: 1px solid rgba(255, 255, 255, 0.07);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  line-height: 1.5;
 }
 
-.text.columns {
-  column-gap: 24px;
-  column-rule: 1px solid rgba(255, 255, 255, 0.07);
+.tree > .branch {
+  break-inside: avoid;
+  margin-bottom: 8px;
+  padding: 5px 7px;
+  background: rgba(255, 255, 255, 0.035);
+  border-radius: 4px;
+}
+
+.branch .branch {
+  margin-left: 3px;
+  padding-left: 6px;
+  border-left: 1px solid rgba(255, 255, 255, 0.11);
+}
+
+.branch p {
+  margin: 0;
+  color: #c3c8d4;
+  overflow-wrap: anywhere;
+}
+
+.role {
+  margin-right: 5px;
+  color: #5b6070;
+}
+
+.empty {
+  margin: 0;
+  color: #6f7484;
 }
 
 .card h2 {

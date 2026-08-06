@@ -221,6 +221,7 @@ fn publish() {
             caret,
             pointer: super::pointer_context(false),
             window_text: None,
+            window_tree: None,
             words: Vec::new(),
         })
     });

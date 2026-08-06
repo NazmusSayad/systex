@@ -2,13 +2,21 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { type ReactNode, useEffect, useState } from "react"
 
-import type { CaretContext, ContextSnapshot, ElementInfo, Rect, Settings, WordBox } from "./types"
+import type {
+  CaretContext,
+  ContextSnapshot,
+  ElementInfo,
+  Rect,
+  Settings,
+  TextNode,
+  WordBox,
+} from "./types"
 
 export function App() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [snapshot, setSnapshot] = useState<ContextSnapshot | null>(null)
-  const [extras, setExtras] = useState<{ window_text: string | null; words: WordBox[] }>({
-    window_text: null,
+  const [extras, setExtras] = useState<{ window_tree: TextNode | null; words: WordBox[] }>({
+    window_tree: null,
     words: [],
   })
   const [error, setError] = useState<string | null>(null)
@@ -28,7 +36,7 @@ export function App() {
 
   useEffect(() => {
     if (!settings || (settings.route !== "window_content" && !settings.words)) {
-      setExtras({ window_text: null, words: [] })
+      setExtras({ window_tree: null, words: [] })
       return
     }
 
@@ -41,7 +49,7 @@ export function App() {
         const next = await invoke<ContextSnapshot>("capture")
 
         if (!cancelled) {
-          setExtras({ window_text: next.window_text, words: next.words })
+          setExtras({ window_tree: next.window_tree, words: next.words })
           setError(null)
         }
       } catch (reason) {
@@ -196,13 +204,36 @@ export function App() {
 
           {settings.route === "window_content" && (
             <Card title={window_?.title ?? "window content"} tall>
-              <p className="text columns" style={{ columnCount: settings.columns }}>
-                {extras.window_text ?? "no readable text in the focused window"}
-              </p>
+              <div className="tree" style={{ columnCount: settings.columns }}>
+                {!extras.window_tree && (
+                  <p className="empty">no readable text in the focused window</p>
+                )}
+
+                {extras.window_tree?.children.map((child, index) => (
+                  <Branch key={index} node={child} />
+                ))}
+              </div>
             </Card>
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+function Branch({ node }: { node: TextNode }) {
+  return (
+    <div className="branch">
+      {node.text && (
+        <p>
+          <span className="role">{node.role.replace(/^AX/, "")}</span>
+          {node.text}
+        </p>
+      )}
+
+      {node.children.map((child, index) => (
+        <Branch key={index} node={child} />
+      ))}
     </div>
   )
 }

@@ -98,7 +98,17 @@ pub struct ContextSnapshot {
     pub pointer: Option<PointerContext>,
     pub related: Option<RelatedContent>,
     pub window_text: Option<String>,
+    pub window_tree: Option<TextNode>,
     pub words: Vec<WordBox>,
+}
+
+/// The visible text of a window keeps the shape the window gave it: one node per element that says
+/// something, holding the elements nested inside it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TextNode {
+    pub role: String,
+    pub text: Option<String>,
+    pub children: Vec<TextNode>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
