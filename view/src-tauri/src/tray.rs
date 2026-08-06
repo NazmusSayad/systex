@@ -3,7 +3,7 @@ use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{App, AppHandle, Manager, Wry};
 
-use crate::{Settings, State, overlay};
+use crate::{Route, Settings, State, overlay};
 
 pub const ID: &str = "tray";
 
@@ -51,6 +51,18 @@ fn build(app: &AppHandle, settings: &Settings) -> tauri::Result<Menu<Wry>> {
         None::<&str>,
     )?;
 
+    let route_menu = Submenu::with_id(app, "route", "View", true)?;
+    for route in Route::ALL {
+        route_menu.append(&CheckMenuItem::with_id(
+            app,
+            format!("route:{}", route.key()),
+            route.label(),
+            true,
+            settings.route == route,
+            None::<&str>,
+        )?)?;
+    }
+
     let interval_menu = Submenu::with_id(app, "interval", "Refresh rate", true)?;
     for ms in INTERVALS {
         interval_menu.append(&CheckMenuItem::with_id(
@@ -75,51 +87,56 @@ fn build(app: &AppHandle, settings: &Settings) -> tauri::Result<Menu<Wry>> {
         )?)?;
     }
 
+    let details_menu = Submenu::with_id(app, "details", "Capture", true)?;
+    for (key, label, enabled) in [
+        ("pointer", "Element under the pointer", settings.pointer),
+        (
+            "attribute_names",
+            "Accessibility attribute names",
+            settings.attribute_names,
+        ),
+        ("window_text", "Whole window text", settings.window_text),
+        ("words", "Word rectangles", settings.words),
+    ] {
+        details_menu.append(&CheckMenuItem::with_id(
+            app,
+            format!("detail:{key}"),
+            label,
+            true,
+            enabled,
+            None::<&str>,
+        )?)?;
+    }
+
     let permissions_menu = Submenu::with_id(app, "permissions", "Permissions", true)?;
     for permission in permissions::ALL {
-        let status = permissions::status(permission);
-        let entry = Submenu::with_id(
-            app,
-            format!("permission:{}", permission.key()),
-            format!("{} · {}", permission.label(), status.label()),
-            true,
-        )?;
+        let granted = permissions::status(permission) == permissions::PermissionStatus::Granted;
 
-        entry.append(&MenuItem::with_id(
+        permissions_menu.append(&MenuItem::with_id(
             app,
             format!("grant:{}", permission.key()),
-            "Grant permission",
-            status != permissions::PermissionStatus::Granted,
+            if granted {
+                format!("{} · granted", permission.label())
+            } else {
+                format!("Grant {}", permission.label())
+            },
+            !granted,
             None::<&str>,
         )?)?;
-        entry.append(&MenuItem::with_id(
-            app,
-            format!("settings:{}", permission.key()),
-            "Open system settings",
-            true,
-            None::<&str>,
-        )?)?;
-
-        permissions_menu.append(&entry)?;
     }
-    permissions_menu.append(&PredefinedMenuItem::separator(app)?)?;
-    permissions_menu.append(&MenuItem::with_id(
-        app,
-        "permissions:refresh",
-        "Refresh statuses",
-        true,
-        None::<&str>,
-    )?)?;
 
     Menu::with_items(
         app,
         &[
             &overlay_item,
             &PredefinedMenuItem::separator(app)?,
+            &route_menu,
             &interval_menu,
             &opacity_menu,
+            &details_menu,
             &PredefinedMenuItem::separator(app)?,
             &permissions_menu,
+            &MenuItem::with_id(app, "diagnostics", "Print diagnostics", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "quit", "Quit Systex", true, None::<&str>)?,
         ],
@@ -135,7 +152,16 @@ pub fn on_menu_event(app: &AppHandle, id: &str) {
     if id == "overlay" {
         let visible = app.state::<State>().toggle_overlay();
         overlay::set_visible(app, visible).expect("the overlay visibility can be changed");
-    } else if id == "permissions:refresh" {
+    } else if id == "diagnostics" {
+        match systex::SystemProvider::new().debug_dump() {
+            Ok(report) => println!("{report}"),
+            Err(error) => eprintln!("diagnostics failed: {error}"),
+        }
+    } else if let Some(key) = id.strip_prefix("route:") {
+        app.state::<State>()
+            .set_route(Route::from_key(key).expect("the tray only offers known routes"));
+    } else if let Some(key) = id.strip_prefix("detail:") {
+        app.state::<State>().toggle_detail(key);
     } else if let Some(ms) = id.strip_prefix("interval:") {
         app.state::<State>()
             .set_interval(ms.parse().expect("the tray only offers numeric intervals"));
@@ -148,17 +174,18 @@ pub fn on_menu_event(app: &AppHandle, id: &str) {
     } else if let Some(key) = id.strip_prefix("grant:") {
         let permission = Permission::from_key(key).expect("the tray only offers known permissions");
 
-        if let Err(error) = permissions::request(permission) {
-            eprintln!("requesting {} failed: {error}", permission.label());
-        }
-    } else if let Some(key) = id.strip_prefix("settings:") {
-        let permission = Permission::from_key(key).expect("the tray only offers known permissions");
-
-        if let Err(error) = permissions::open_settings(permission) {
-            eprintln!(
-                "opening settings for {} failed: {error}",
-                permission.label()
-            );
+        match permissions::request(permission) {
+            Ok(status) => {
+                if status != permissions::PermissionStatus::Granted
+                    && let Err(error) = permissions::open_settings(permission)
+                {
+                    eprintln!(
+                        "opening settings for {} failed: {error}",
+                        permission.label()
+                    );
+                }
+            }
+            Err(error) => eprintln!("requesting {} failed: {error}", permission.label()),
         }
     } else {
         eprintln!("unknown tray item `{id}`");

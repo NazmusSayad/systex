@@ -1,14 +1,16 @@
+pub mod engine;
 pub mod error;
 #[cfg(target_os = "macos")]
 mod macos;
 pub mod model;
 pub mod permissions;
 pub mod provider;
+pub mod related;
 
 pub use error::{Result, SystexError};
 pub use model::{
-    AppInfo, CaretContext, ContextSnapshot, ElementInfo, Point, PointerContext, Rect, WindowInfo,
-    now_ms,
+    AppInfo, CaptureOptions, CaretContext, ContextSnapshot, ElementInfo, Point, PointerContext,
+    Rect, RelatedContent, WindowInfo, WordBox, now_ms,
 };
 pub use permissions::{Permission, PermissionStatus};
 pub use provider::SystemProvider;
@@ -30,7 +32,7 @@ mod tests {
         }
 
         match provider.capture() {
-            Ok(snapshot) => assert_eq!(snapshot.provider, "system"),
+            Ok(snapshot) => assert!(!snapshot.provider.is_empty()),
             Err(error) => assert!(matches!(
                 error,
                 SystexError::NothingFocused

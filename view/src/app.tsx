@@ -1,37 +1,47 @@
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
-import { useEffect, useState } from "react"
+import { type ReactNode, useEffect, useState } from "react"
 
-import type { CaretContext, ContextSnapshot, ElementInfo, Rect, Settings } from "./types"
+import type { CaretContext, ContextSnapshot, ElementInfo, Rect, Settings, WordBox } from "./types"
 
 export function App() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [snapshot, setSnapshot] = useState<ContextSnapshot | null>(null)
+  const [extras, setExtras] = useState<{ window_text: string | null; words: WordBox[] }>({
+    window_text: null,
+    words: [],
+  })
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     invoke<Settings>("settings").then(setSettings)
 
-    const unlisten = listen<Settings>("settings", (event) => setSettings(event.payload))
+    const unlisten = Promise.all([
+      listen<Settings>("settings", (event) => setSettings(event.payload)),
+      listen<ContextSnapshot>("context", (event) => setSnapshot(event.payload)),
+    ])
 
     return () => {
-      unlisten.then((stop) => stop())
+      unlisten.then((stops) => stops.forEach((stop) => stop()))
     }
   }, [])
 
   useEffect(() => {
-    if (!settings) {
+    if (!settings || (settings.route !== "window_content" && !settings.words)) {
+      setExtras({ window_text: null, words: [] })
       return
     }
 
     let cancelled = false
 
-    async function tick() {
+    // The window scrape and the per-word rectangles are far too slow for the live feed, so they are
+    // pulled on their own schedule and merged into whatever the engine last reported.
+    async function pull() {
       try {
         const next = await invoke<ContextSnapshot>("capture")
 
         if (!cancelled) {
-          setSnapshot(next)
+          setExtras({ window_text: next.window_text, words: next.words })
           setError(null)
         }
       } catch (reason) {
@@ -41,80 +51,183 @@ export function App() {
       }
     }
 
-    tick()
-    const timer = window.setInterval(tick, settings.interval_ms)
+    pull()
+    const timer = window.setInterval(pull, Math.max(settings.interval_ms, 500))
 
     return () => {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [settings?.interval_ms])
+  }, [settings?.interval_ms, settings?.route, settings?.words])
 
   if (!settings) {
     return null
   }
 
+  const app = snapshot?.focused_app ?? null
+  const window_ = snapshot?.focused_window ?? null
+  const caret = snapshot?.caret ?? null
+  const element = caret?.element ?? null
+  const related = snapshot?.related ?? null
+  const pointer = snapshot?.pointer ?? null
+
   return (
     <div className="overlay" style={{ opacity: settings.opacity / 100 }}>
-      {snapshot?.focused_window?.bounds && (
-        <div className="frame window" style={toStyle(snapshot.focused_window.bounds)} />
+      <div className="backdrop" />
+
+      {window_?.bounds && <div className="frame window" style={toStyle(window_.bounds)} />}
+
+      {element?.bounds && <div className="frame element" style={toStyle(element.bounds)} />}
+
+      {caret?.bounds && <div className="frame caret" style={toStyle(caret.bounds)} />}
+
+      {pointer?.element?.bounds && (
+        <div className="frame hit" style={toStyle(pointer.element.bounds)} />
       )}
 
-      {snapshot?.caret?.element?.bounds && (
-        <div className="frame element" style={toStyle(snapshot.caret.element.bounds)} />
+      {extras.words.map((word, index) => (
+        <div key={`${word.text}-${index}`} className="frame word" style={toStyle(word.rect)} />
+      ))}
+
+      {pointer && (
+        <div className="pointer" style={{ left: pointer.position.x, top: pointer.position.y }} />
       )}
 
-      {snapshot?.caret?.bounds && (
-        <div className="frame caret" style={toStyle(snapshot.caret.bounds)} />
-      )}
-
-      {snapshot?.pointer && (
-        <div
-          className="pointer"
-          style={{ left: snapshot.pointer.position.x, top: snapshot.pointer.position.y }}
-        />
-      )}
-
-      <div className="hud">
+      <div className="readout">
         <header>
           <span className="dot" />
           <strong>systex</strong>
+          <span className="meta">{settings.route === "basic" ? "basic" : "window content"}</span>
+          <span className="meta">{snapshot?.provider ?? "waiting"}</span>
           <span className="meta">every {settings.interval_ms}ms</span>
+          <span className="meta">
+            {snapshot ? new Date(snapshot.captured_at_ms).toLocaleTimeString() : "—"}
+          </span>
+          {error && <span className="error">{error}</span>}
+          {!snapshot && !error && <span className="meta">waiting for the accessibility engine</span>}
         </header>
 
-        {error && <p className="error">{error}</p>}
+        <div className="panels">
+          {settings.route === "basic" && (
+            <div className="cards">
+              <Card title="application">
+                <Row label="name" value={app?.name ?? null} />
+                <Row label="bundle" value={app?.bundle_id ?? null} />
+                <Row label="pid" value={app ? String(app.pid) : null} />
+                <Row label="path" value={app?.path ?? null} />
+              </Card>
 
-        {!error && snapshot && (
-          <>
-            <Row label="app" value={snapshot.focused_app?.name ?? null} />
-            <Row label="window" value={snapshot.focused_window?.title ?? null} />
-            <Row label="caret" value={formatCaret(snapshot)} />
-            <Row label="element" value={formatElement(snapshot.caret?.element ?? null)} />
-            <Row
-              label="pointer"
-              value={
-                snapshot.pointer
-                  ? `${Math.round(snapshot.pointer.position.x)}, ${Math.round(snapshot.pointer.position.y)}`
-                  : null
-              }
-            />
-            <Row label="under pointer" value={formatElement(snapshot.pointer?.element ?? null)} />
+              <Card title="window">
+                <Row label="title" value={window_?.title ?? null} />
+                <Row label="document" value={window_?.document ?? null} />
+                <Row label="bounds" value={formatRect(window_?.bounds ?? null)} />
+                <Row
+                  label="state"
+                  value={window_ ? `${window_.main ? "main" : "secondary"}${window_.minimized ? ", minimized" : ""}` : null}
+                />
+              </Card>
 
-            {snapshot.caret && hasText(snapshot.caret) && (
-              <p className="text">
-                <span className="before">{snapshot.caret.text_before}</span>
-                <span className="marker" />
-                {snapshot.caret.selected_text && (
-                  <span className="selection">{snapshot.caret.selected_text}</span>
+              <Card title="element">
+                <Row label="role" value={formatElement(element)} />
+                <Row label="description" value={element?.role_description ?? null} />
+                <Row label="identifier" value={element?.identifier ?? null} />
+                <Row label="placeholder" value={element?.placeholder ?? null} />
+                <Row label="help" value={element?.help ?? null} />
+                <Row
+                  label="state"
+                  value={
+                    element ? `${element.editable ? "editable" : "read-only"}, ${element.enabled ? "enabled" : "disabled"}` : null
+                  }
+                />
+                <Row label="characters" value={element?.character_count?.toString() ?? null} />
+                <Row label="bounds" value={formatRect(element?.bounds ?? null)} />
+              </Card>
+
+              <Card title="caret">
+                <Row label="position" value={formatCaret(caret)} />
+                <Row label="selection" value={formatSelection(caret)} />
+                <Row label="bounds" value={formatRect(caret?.bounds ?? null)} />
+
+                {caret && hasText(caret) && (
+                  <p className="text">
+                    <span className="before">{tail(caret.text_before, 400)}</span>
+                    <span className="marker" />
+                    {caret.selected_text && <span className="selection">{caret.selected_text}</span>}
+                    <span className="after">{head(caret.text_after, 400)}</span>
+                  </p>
                 )}
-                <span className="after">{snapshot.caret.text_after}</span>
+              </Card>
+
+              <Card title="related">
+                <Row label="word" value={related?.word ?? null} />
+                <Row label="line" value={related?.line || null} />
+                <Row label="sentence" value={related?.sentence ?? null} />
+
+                {related?.paragraph && <p className="text">{head(related.paragraph, 900)}</p>}
+              </Card>
+
+              <Card title="pointer">
+                <Row
+                  label="position"
+                  value={pointer ? `${Math.round(pointer.position.x)}, ${Math.round(pointer.position.y)}` : null}
+                />
+                <Row label="element" value={formatElement(pointer?.element ?? null)} />
+                <Row label="value" value={pointer?.element?.value ?? null} />
+                <Row label="app" value={pointer?.app?.name ?? null} />
+                <Row label="window" value={pointer?.window?.title ?? null} />
+              </Card>
+
+              {extras.words.length > 0 && (
+                <Card title={`words · ${extras.words.length}`}>
+                  <p className="attributes">{extras.words.map((word) => word.text).join(" · ")}</p>
+                </Card>
+              )}
+
+              {element && element.attributes.length > 0 && (
+                <Card title="attributes" wide>
+                  <p className="attributes">{element.attributes.join(" · ")}</p>
+                  {element.parameterized_attributes.length > 0 && (
+                    <p className="attributes">{element.parameterized_attributes.join(" · ")}</p>
+                  )}
+                </Card>
+              )}
+            </div>
+          )}
+
+          {settings.route === "window_content" && (
+            <Card title={window_?.title ?? "window content"} tall>
+              <p className="text columns">
+                {extras.window_text ?? "no readable text in the focused window"}
               </p>
-            )}
-          </>
-        )}
+            </Card>
+          )}
+        </div>
       </div>
     </div>
   )
+}
+
+function Card({
+  title,
+  wide,
+  tall,
+  children,
+}: {
+  title: string
+  wide?: boolean
+  tall?: boolean
+  children: ReactNode
+}) {
+  return (
+    <section className={cn("card", wide && "wide", tall && "tall")}>
+      <h2>{title}</h2>
+      <div className="body">{children}</div>
+    </section>
+  )
+}
+
+function cn(...classes: (string | false | undefined)[]) {
+  return classes.filter(Boolean).join(" ")
 }
 
 function Row({ label, value }: { label: string; value: string | null }) {
@@ -130,20 +243,56 @@ function hasText(caret: CaretContext) {
   return caret.text_before.length > 0 || caret.text_after.length > 0 || caret.selected_text !== null
 }
 
+function head(text: string, limit: number) {
+  if (text.length <= limit) {
+    return text
+  }
+
+  return `${text.slice(0, limit)}…`
+}
+
+function tail(text: string, limit: number) {
+  if (text.length <= limit) {
+    return text
+  }
+
+  return `…${text.slice(text.length - limit)}`
+}
+
 function toStyle(rect: Rect) {
   return { left: rect.x, top: rect.y, width: rect.width, height: rect.height }
 }
 
-function formatCaret(snapshot: ContextSnapshot) {
-  if (!snapshot.caret) {
+function formatRect(rect: Rect | null) {
+  if (!rect) {
     return null
   }
 
-  if (snapshot.caret.line === null || snapshot.caret.column === null) {
+  return `${Math.round(rect.x)}, ${Math.round(rect.y)} · ${Math.round(rect.width)} × ${Math.round(rect.height)}`
+}
+
+function formatCaret(caret: CaretContext | null) {
+  if (!caret) {
+    return null
+  }
+
+  if (caret.line === null || caret.column === null) {
     return "unknown position"
   }
 
-  return `line ${snapshot.caret.line}, column ${snapshot.caret.column}`
+  return `line ${caret.line}, column ${caret.column}`
+}
+
+function formatSelection(caret: CaretContext | null) {
+  if (!caret) {
+    return null
+  }
+
+  if (caret.selection_length === 0) {
+    return `offset ${caret.selection_start}`
+  }
+
+  return `${caret.selection_start} + ${caret.selection_length}`
 }
 
 function formatElement(element: ElementInfo | null) {
@@ -151,9 +300,11 @@ function formatElement(element: ElementInfo | null) {
     return null
   }
 
+  const role = element.subrole ? `${element.role}/${element.subrole}` : element.role
+
   if (!element.label) {
-    return element.role
+    return role
   }
 
-  return `${element.role} · ${element.label}`
+  return `${role} · ${element.label}`
 }
