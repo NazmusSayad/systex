@@ -29,6 +29,9 @@ use elem::{APP_TIMEOUT, ELEMENT_TIMEOUT, Elem};
 const MAX_DEPTH: usize = 40;
 const MAX_NODES: usize = 1500;
 const MAX_CHARS: usize = 20_000;
+/// Below this depth every element that branches ends its children with a blank line, which turns
+/// the flat scrape into the visual groups the window itself has.
+const GROUP_DEPTH: usize = 8;
 
 pub fn capture(options: CaptureOptions) -> Result<ContextSnapshot> {
     let Some(focused_app) = frontmost_app() else {
@@ -339,7 +342,7 @@ fn window_text(app: &Elem, window: Option<&Elem>) -> Option<String> {
         return None;
     }
 
-    Some(best)
+    Some(best.trim().to_string())
 }
 
 fn collect_text(
@@ -357,21 +360,32 @@ fn collect_text(
 
     for name in [kAXTitleAttribute, kAXValueAttribute, "AXDescription"] {
         if let Some(text) = element.string_attribute(name) {
-            let text = text.trim();
+            // Values arrive with their own line breaks and runs of padding, which read as ragged
+            // holes once the scrape is stacked, so every snippet becomes one tidy line.
+            let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
 
-            if !text.is_empty() && seen.insert(text.to_string()) {
-                out.push_str(text);
+            if !text.is_empty() && seen.insert(text.clone()) {
+                out.push_str(&text);
                 out.push('\n');
             }
         }
     }
 
-    for child in element.children() {
+    let children = element.children();
+    let group = children.len() > 1 && depth <= GROUP_DEPTH;
+
+    for child in children {
         if *nodes > MAX_NODES || out.len() > MAX_CHARS {
             break;
         }
 
+        let before = out.len();
+
         collect_text(&child, depth + 1, nodes, seen, out);
+
+        if group && out.len() > before && !out.ends_with("\n\n") {
+            out.push('\n');
+        }
     }
 }
 

@@ -161,6 +161,10 @@ header {
 .card.tall .text {
   height: 100%;
   margin: 0;
+  padding: 0;
+  background: none;
+  font-size: 9px;
+  line-height: 1.45;
 }
 
 .text.columns {
