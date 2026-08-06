@@ -147,8 +147,6 @@ header {
   grid-column: span 2;
 }
 
-/* The window scrape owns the whole screen on its own route, and flows into as many text columns
-   as fit. */
 .card.tall {
   flex: 1;
   max-height: none;
@@ -156,14 +154,17 @@ header {
 
 .card.tall .body {
   flex: 1;
+  overflow: hidden;
   mask-image: none;
 }
 
-.text.columns {
+.card.tall .text {
   height: 100%;
   margin: 0;
-  columns: 180px auto;
-  column-gap: 16px;
+}
+
+.text.columns {
+  column-gap: 24px;
   column-rule: 1px solid rgba(255, 255, 255, 0.07);
 }
 

@@ -196,7 +196,7 @@ export function App() {
 
           {settings.route === "window_content" && (
             <Card title={window_?.title ?? "window content"} tall>
-              <p className="text columns">
+              <p className="text columns" style={{ columnCount: settings.columns }}>
                 {extras.window_text ?? "no readable text in the focused window"}
               </p>
             </Card>

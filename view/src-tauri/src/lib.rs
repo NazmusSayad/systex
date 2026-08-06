@@ -47,6 +47,7 @@ impl Route {
 #[derive(Debug, Clone, Serialize)]
 pub struct Settings {
     pub route: Route,
+    pub columns: u8,
     pub interval_ms: u64,
     pub opacity: u8,
     pub overlay_visible: bool,
@@ -84,6 +85,13 @@ impl State {
             .lock()
             .expect("the settings lock is poisoned")
             .route = route;
+    }
+
+    fn set_columns(&self, columns: u8) {
+        self.settings
+            .lock()
+            .expect("the settings lock is poisoned")
+            .columns = columns;
     }
 
     fn set_interval(&self, interval_ms: u64) {
@@ -173,6 +181,7 @@ pub fn run() {
             app.manage(State {
                 settings: Mutex::new(Settings {
                     route: Route::Basic,
+                    columns: 2,
                     interval_ms: 500,
                     opacity: 80,
                     overlay_visible: true,

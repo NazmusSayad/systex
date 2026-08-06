@@ -7,6 +7,7 @@ use crate::{Route, Settings, State, overlay};
 
 pub const ID: &str = "tray";
 
+const COLUMNS: [u8; 5] = [1, 2, 3, 4, 6];
 const INTERVALS: [u64; 4] = [200, 500, 1000, 2000];
 const OPACITIES: [u8; 4] = [40, 60, 80, 100];
 
@@ -59,6 +60,27 @@ fn build(app: &AppHandle, settings: &Settings) -> tauri::Result<Menu<Wry>> {
             route.label(),
             true,
             settings.route == route,
+            None::<&str>,
+        )?)?;
+    }
+
+    let columns_menu = Submenu::with_id(
+        app,
+        "columns",
+        "Columns",
+        settings.route == Route::WindowContent,
+    )?;
+    for count in COLUMNS {
+        columns_menu.append(&CheckMenuItem::with_id(
+            app,
+            format!("columns:{count}"),
+            if count == 1 {
+                "1 column".to_string()
+            } else {
+                format!("{count} columns")
+            },
+            true,
+            settings.columns == count,
             None::<&str>,
         )?)?;
     }
@@ -131,6 +153,7 @@ fn build(app: &AppHandle, settings: &Settings) -> tauri::Result<Menu<Wry>> {
             &overlay_item,
             &PredefinedMenuItem::separator(app)?,
             &route_menu,
+            &columns_menu,
             &interval_menu,
             &opacity_menu,
             &details_menu,
@@ -160,6 +183,9 @@ pub fn on_menu_event(app: &AppHandle, id: &str) {
     } else if let Some(key) = id.strip_prefix("route:") {
         app.state::<State>()
             .set_route(Route::from_key(key).expect("the tray only offers known routes"));
+    } else if let Some(count) = id.strip_prefix("columns:") {
+        app.state::<State>()
+            .set_columns(count.parse().expect("the tray only offers numeric columns"));
     } else if let Some(key) = id.strip_prefix("detail:") {
         app.state::<State>().toggle_detail(key);
     } else if let Some(ms) = id.strip_prefix("interval:") {

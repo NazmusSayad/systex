@@ -93,6 +93,7 @@ export type Route = "basic" | "window_content"
 
 export type Settings = {
   route: Route
+  columns: number
   interval_ms: number
   opacity: number
   overlay_visible: boolean
